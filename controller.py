@@ -196,7 +196,7 @@ if __name__ == "__main__":
     target_joints[5] = target_joints[5] *180/np.pi
     target_joints[6] = target_joints[6] *180/np.pi
     print("target_joints_degrees:",target_joints)
-    aaa = 1122
+    aaa = 123
 
 
 
