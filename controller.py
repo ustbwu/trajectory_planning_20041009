@@ -9,7 +9,7 @@ from ik_solver import IK_solver
 sys.path.append('D:\\taiche\\mpc\\trajectory_planning_20240905\\collision_detect.py')
 from collision_detect import collision
 from DDIM import FORWARD
-device = torch.device("cuda")
+device = torch.device("cpu")
 # 单关节插值
 def interpolate_single_joint(start_joints, target_joints, joint_idx, T):
     joint_sequence = np.zeros((T, len(start_joints)))
@@ -61,8 +61,13 @@ def main(current_joints, a):
     pid_controller = PIDController(kp, ki, kd)
     T = 2
     num_joints = len(current_joints)
-    joint_order = [5, 2, (3, 1), (4, 0), 6, 7]  # 控制顺序
-    min_error_threshold = 2
+    joint_order1 = [2, 7, 6 , (3, 1), (4, 0), 5]  # 控制顺序
+    joint_order2 = [2, 7, 6, (3, 1), 5, (4, 0)]  # 控制顺序
+    joint_order3 = [2, 7, 6, (4, 0), (3, 1), 5]  # 控制顺序
+    joint_order4 = [2, 7, 6, (4, 0), 5, (3, 1)]  # 控制顺序
+    joint_order5 = [2, 7, 6, 5, (3, 1), (4, 0)]  # 控制顺序
+    joint_order6 = [2, 7, 6, 5, (4, 0), (3, 1)]  # 控制顺序
+    min_error_threshold = 3
     collision_free = False
 
     # 初始化 best_trajectory 和 best_target_joints
@@ -76,7 +81,6 @@ def main(current_joints, a):
             target_joints = target_joints_total[i].flatten().tolist()
             joint_actual_trajectory = []
             collision_occurred = False
-
             # 生成实际的关节轨迹
             for joint_idxs in joint_order:
                 if isinstance(joint_idxs, tuple):
@@ -151,7 +155,6 @@ def main(current_joints, a):
     return best_trajectory, best_target_joints
 
 
-
 if __name__ == "__main__":
     """示例"""
     joint_initial = np.array([-8.660458, -79.42416, 3.440263 * 1000, 77.7766, -98.93389, 61.22102,
@@ -166,7 +169,7 @@ if __name__ == "__main__":
     # M_inv = np.linalg.inv(M)
     M_inv = np.linalg.inv(M)
     current_joints = [-8.660458, -79.42416, 3.440263 , 77.7766, -98.93389, 61.22102,
-                      4.9999924, 3.130865 ]
+                      0, 3.130865 ]
 
     current_joints[0] = current_joints[0] /180*np.pi
     current_joints[1] = current_joints[1] /180*np.pi
@@ -176,7 +179,7 @@ if __name__ == "__main__":
     current_joints[6] = current_joints[6] /180*np.pi
 
     """传感器读数"""
-    a = np.array([[0.744, 2.5, 0, 0.744, 2.5, 1]], dtype=np.float32)  # 单位m
+    a = np.array([[-1.944, 0.2, 0, -1.944, 0.2, 1]], dtype=np.float32)  # 单位m
     a[:, -1] = a[:, -1] * -1
     a = a * 100
     a[0, :3] = np.dot(M_inv[:3, :3], a[0, :3])
@@ -196,7 +199,6 @@ if __name__ == "__main__":
     target_joints[5] = target_joints[5] *180/np.pi
     target_joints[6] = target_joints[6] *180/np.pi
     print("target_joints_degrees:",target_joints)
-    aaa = 123
 
 
 

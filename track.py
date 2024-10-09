@@ -45,16 +45,16 @@ ort_inputs = {"input": a}
 """  八个结果为单位弧度和m"""
 target_joints = IK_solver(a)
 target_joints_array = target_joints[0]
-target_joints_array[0,0] = target_joints_array[0,0]*180/np.pi
-target_joints_array[0,1] = target_joints_array[0,1]*180/np.pi
-target_joints_array[0,2] = target_joints_array[0,2]*1000
-target_joints_array[0,3] = target_joints_array[0,3]*180/np.pi
-target_joints_array[0,4] = target_joints_array[0,4]*180/np.pi
-target_joints_array[0,5] = target_joints_array[0,5]*180/np.pi
-target_joints_array[0,6] = target_joints_array[0,6]*180/np.pi
-target_joints_array[0,7] = target_joints_array[0,7]*1000
-print(target_joints_array[0,7])
-target_joints_array[0,7] = target_joints_array[0,7]
+target_joints_array[0] = target_joints_array[0]*180/np.pi
+target_joints_array[1] = target_joints_array[1]*180/np.pi
+target_joints_array[2] = target_joints_array[2]*1000
+target_joints_array[3] = target_joints_array[3]*180/np.pi
+target_joints_array[4] = target_joints_array[4]*180/np.pi
+target_joints_array[5] = target_joints_array[5]*180/np.pi
+target_joints_array[6] = target_joints_array[6]*180/np.pi
+target_joints_array[7] = target_joints_array[7]*1000
+print(target_joints_array[7])
+target_joints_array[7] = target_joints_array[7]
 target_joints = target_joints_array.flatten().tolist()
 print('target_joints',target_joints)
 """生成控制量部分"""
