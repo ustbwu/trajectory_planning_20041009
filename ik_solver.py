@@ -67,135 +67,112 @@ def FORWARD(output_denoise):
     pose_V[4] = end_poser1[ 1] + end_poser[ 1, 3]
     pose_V[5] = end_poser1[ 2] + end_poser[ 2, 3] + 1.702+0.205
     return pose_V , joint_hm, matrix_end  ,d3
+def compute_constraints(action):
+    distances_y = []
+    distances_z = []
+    pose_V, joint_hm, matrix, d3 = FORWARD(action)
+    matrix_3 = joint_hm[2][:3, :3]
+    y_zhou = torch.tensor([[0.0], [1.0], [0.0]]).to(device)
+    z_zhou = torch.tensor([[1.0], [0.0], [0.0]]).to(device)
+    zf_zhou = torch.tensor([[0.0], [0.0], [-1.0]]).to(device)
+    y_3 = torch.matmul(matrix_3, y_zhou)
+    z_3 = torch.matmul(matrix_3, z_zhou)
+    z_8_reverse = torch.matmul(matrix, zf_zhou)  # 八关节的反向投影
+    dh = [joint_hm[i] for i in range(0, 8)]  # 单个DH矩阵
+    dh_end = [dh1[ 0:3, 3] for dh1 in dh]  # 末端点坐标
+    # dh_end_point = [torch.unsqueeze(dh2, dim=2).cuda() for dh2 in dh_end]  # 修改为   [1024,3,3]
+    height = 1.702+ 0.205
+    d_ground = 0.05
+    d_wall = 1.9
 
-def improved_annealed_langevin_dynamics(s0, action, n_steps):
-    device = action.device
-    v = torch.zeros_like(action).to(device)
-    beta2 = 0.95
-    epsilon = 1e-8  # Smaller epsilon for numerical stability
-    # Adaptive learning rate parameters
-    initial_lr = 1e-3
-    min_lr = 1e-5
-    # Noise schedule parameters
-    initial_noise_scale = 1e-4
-    final_noise_scale = 1e-6
-    best_action = action.clone()
-    best_loss = float('inf')
-    joint_high = torch.tensor([35 * np.pi / 180, -60 * np.pi / 180, 394 / 100, 155 * np.pi / 180,
-                               -55 * np.pi / 180, 180 * np.pi / 180, 5 * np.pi / 180, 371 / 100]).to(device)
-    joint_low = torch.tensor([-35 * np.pi / 180, -155 * np.pi / 180, 259 / 100, 60 * np.pi / 180,
-                              -125 * np.pi / 180, -180 * np.pi / 180, -90 * np.pi / 180, 250 / 100]).to(device)
-    # 定义约束参数
-    height = 1.702+0.205
-    d_ground = 0.05+0.205
-    d_wall = 1.95
+    """拱顶"""
+    y_data = np.array([-2.1, -2.003, -1.605, -1.107, -0.565, 0, 0.565, 1.107, 1.605, 2.003, 2.1])
+    z_data = np.array([2.4, 2.975, 3.454, 3.726, 3.893, 3.95, 3.893, 3.726, 3.454, 2.975, 2.4])  # 创建样条插值函数
+    cofficients = np.polyfit(y_data, z_data, 10)  # 拟合系数
+    y_point = dh_end[7][1]
+    z_point = (dh_end[7][2] + height)
+    if ((y_point.abs() <= 2.1) & (z_point > 2.4)).any():
+        selected_indices = ((y_point.abs() <= 2.1) & (z_point > 2.4)).all()
+        # 选择满足条件的数据点的 y 和 z 值
+        selected_y = y_point[selected_indices]
+        selected_z = z_point[selected_indices]
+        z_fit = np.polyval(cofficients, selected_y.detach().numpy().flatten())
+        lossarch_z_1 = torch.relu(selected_z - torch.tensor(z_fit) + 0.05)
+        constrain_arch_z = lossarch_z_1.mean()
+    else:
+        constrain_arch_z = 0.0
+
+    """地面"""
+    constrain_ground_z = torch.relu(d_ground - dh_end[7][2] - height) + torch.relu(
+        d_ground - dh_end[2][2] - height) + torch.relu(d_ground - dh_end[5][2] - height) + torch.relu( d_ground - dh_end[6][2] - height)
+    constrain_ground_z = (constrain_ground_z).mean()
+
+    """墙面"""
+    loss_wall_mask = torch.zeros(dh_end[0].shape[0], dtype=torch.bool, device=dh_end[0].device)
+    for dh in dh_end:
+        condition = (abs(dh[1]) > d_wall) & (dh[2] + height < 2.4)
+        loss_wall_mask = condition
+    # 计算最终的 loss_total_wall
+    loss_wall1 = (torch.relu(abs(dh_end[7][1]) - d_wall) + torch.relu(abs(dh_end[6][1]) - d_wall)  + torch.relu(abs(dh_end[3][1]) - d_wall) + torch.relu(
+                abs(dh_end[2][1]) - d_wall)+torch.relu(abs(dh_end[5][1]) - d_wall) +torch.relu(abs(dh_end[4][1]) - d_wall)  ) * loss_wall_mask
+    constrain_wall_y = (loss_wall1).mean()
+
+    """自身碰撞"""
+    start_point8 = z_8_reverse * 5.8705 + dh_end[7]  # 8关节的初始起点
+    point8 = (start_point8 - dh_end[7]) * 0.001  # 间断点
+    weights = [999, 950, 920, 900, 880, 850, 820, 800, 750, 700, 650]
+    for weight in weights:
+        point_direction = weight * point8 + dh_end[7] -dh_end[1]
+        distance_y = torch.sum(point_direction.squeeze() * y_3.squeeze())
+        distance_z = torch.sum(point_direction.squeeze() * z_3.squeeze())
+        distances_y.append(distance_y.unsqueeze(0))
+        distances_z.append(distance_z.unsqueeze(0))
+
+    distances_y = torch.cat(distances_y, dim=0).cuda()  # 沿着第一个维度拼接
+    distances_z = torch.cat(distances_z, dim=0).cuda()  # 沿着第一个维度拼接
     safety_distance_y = 0.43 + 0.10
     safety_distance_z = 0.36 + 0.10
+    loss_self_mask = (safety_distance_y > abs(distances_y)) & (safety_distance_z > abs(distances_z))
+    constrain_distances_y = torch.nn.functional.softplus(safety_distance_y - torch.abs(distances_y))
+    constrain_distances_z = torch.nn.functional.softplus(safety_distance_z - torch.abs(distances_z))
+    constrain_self = torch.mean((constrain_distances_z + constrain_distances_y) * loss_self_mask)
 
-    # 拱顶约束的多项式系数
-    y_data = np.array([-2.1, -2.003, -1.605, -1.107, -0.565, 0, 0.565, 1.107, 1.605, 2.003, 2.1])
-    z_data = np.array([2.4, 2.975, 3.454, 3.726, 3.893, 3.95, 3.893, 3.726, 3.454, 2.975, 2.4])
-    coefficients = np.polyfit(y_data, z_data, 10)
+    return constrain_arch_z + constrain_ground_z + constrain_wall_y + constrain_self
 
-    def compute_constraints(action):
-        pose_V, joint_hm, matrix, d3 = FORWARD(action)
-
-        # 提取需要的数据
-        matrix_3 = joint_hm[2][:3, :3]
-        y_zhou = torch.tensor([0.0, 1.0, 0.0])
-        z_zhou = torch.tensor([1.0, 0.0, 0.0])
-        zf_zhou = torch.tensor([0.0, 0.0, -1.0])
-        y_3 = torch.matmul(matrix_3, y_zhou)
-        z_3 = torch.matmul(matrix_3, z_zhou)
-        z_8_reverse = torch.matmul(matrix, zf_zhou)
-
-        dh = [joint_hm[i] for i in range(8)]
-        dh_end = [dh1[0:3, 3] for dh1 in dh]
-        dh_end_point = [dh2 for dh2 in dh_end]
-
-        # 拱顶约束
-        y_point = dh_end_point[7][1].cpu()
-        z_point = (dh_end_point[7][2] + height).cpu()
-        mask = ((abs(y_point) <= 2.1) & (z_point > 2.4))
-        selected_y = y_point[mask]
-        selected_z = z_point[mask]
-        if selected_y.numel() > 0:
-            z_fit = np.polyval(coefficients, selected_y.detach().numpy().flatten())
-            constrain_arch_z = torch.relu(selected_z - torch.tensor(z_fit) ).mean()
-        else:
-            constrain_arch_z = torch.tensor(0.0).to(device)
-
-        # 地面约束
-        constrain_ground_z = sum(torch.relu(d_ground - dh[  2] - height).mean() for dh in dh_end_point)
-
-        # 墙面约束
-        loss_wall_mask = torch.zeros( 1, 1, dtype=torch.bool, device=device)
-        for dh in dh_end_point:
-            loss_wall_mask |= (abs(dh[ 1]) > d_wall) & (dh[ 2] + height < 2.4)
-        constrain_wall_y = sum(
-            torch.relu(abs(dh[1]) - d_wall).mean() for dh in dh_end_point) * loss_wall_mask.float().mean()
-
-        # 自身碰撞约束
-        start_point8 = z_8_reverse * 5.8705 + dh_end_point[7]
-        point8 = (start_point8 - dh_end_point[7]) * 0.001
-        weights = [999, 950, 920, 900, 880, 850, 820, 800, 750, 700, 650]
-        distances_y = []
-        distances_z = []
-        for weight in weights:
-            point_direction = weight * point8 + dh_end_point[7] - dh_end_point[1]
-            distances_y.append(torch.sum(point_direction * y_3))
-            distances_z.append(torch.sum(point_direction* z_3))
-
-        distances_y = torch.stack(distances_y)  # 形状将是 (11,)
-        distances_z = torch.stack(distances_z)  # 形状将是 (11,)
-        loss_self_mask = (safety_distance_y > abs(distances_y)) & (safety_distance_z > abs(distances_z))
-        constrain_distances_y = F.softplus(safety_distance_y - torch.abs(distances_y))
-        constrain_distances_z = F.softplus(safety_distance_z - torch.abs(distances_z))
-        constrain_self = ((constrain_distances_z + constrain_distances_y) * loss_self_mask.float()).mean()
-
-        return constrain_arch_z + constrain_ground_z + constrain_wall_y + constrain_self
-
-    for ite in range(n_steps):
-        # Compute score (gradient)
-        action.requires_grad_(True)
+def flexible_lbfgs_annealed_langevin_dynamics(s0, action, n_steps=5, history_size=10, max_iter=5,
+                                              line_search_fn="strong_wolfe"):
+    device = action.device
+    action = action.clone().detach().requires_grad_(True)
+    ideal_pos = s0.unsqueeze(0)
+    best_action = action.clone()
+    best_loss = float('inf')
+    def closure():
+    #这一过程会尝试找到一个最优的步骤，以在每一步中降低损失
+        optimizer.zero_grad()
         pose_V, _, _, _ = FORWARD(action)
         pose_V = pose_V.to(device)
-        loss = F.mse_loss(100 * pose_V, s0) + compute_constraints(action)
-        grad = torch.autograd.grad(loss.mean(), action, create_graph=True)[0]
-        with torch.no_grad():
-            # Update momentum term
-            v = beta2 * v + (1 - beta2) * (grad ** 2)
-            v_hat = v / (1 - beta2 ** (ite + 1))
-            # Adaptive learning rate
-            lr = initial_lr * min(ite / (n_steps * 0.1), (1 - ite / n_steps) ** 0.5) + min_lr
-            # Gradient clipping
-            max_grad_norm = 1.0
-            torch.nn.utils.clip_grad_norm_(grad, max_grad_norm)
-            # Noise schedule
-            noise_scale = initial_noise_scale * (1 - ite / n_steps) ** 2 + final_noise_scale
-            # Update action
-            step_size = lr / (torch.sqrt(v_hat) + epsilon)
-            proposed_action = action - step_size * grad + torch.rand_like(action) * noise_scale
-            # Enforce joint limits
-            within_limits = torch.logical_and(proposed_action <= joint_high, proposed_action >= joint_low)
-            action = torch.where(within_limits, proposed_action, action)
-            # Check for improvement
-            current_loss = loss.item()
-            if current_loss < best_loss:
-                best_loss = current_loss
-                best_action = action.clone()
-            # Early stopping
-            if current_loss < 1e-4:
-                print(f"Converged at iteration {ite}")
-                break
-            # Periodic resetting to best known solution (to escape local minima)
-            if ite % 25 == 0 and ite > 0:
-                action = best_action.clone() + torch.rand_like(action) * noise_scale
-                # action = best_action.clone()
-        action = action.detach()  # Detach for next iteration
-        if ite % 10 == 0:
-            print(f"Iteration {ite}, Loss: {current_loss:.6f}, LR: {lr:.6f}, Noise: {noise_scale:.6f}")
-    return best_action
+        loss_mse = F.mse_loss(100 * pose_V, ideal_pos.squeeze(0))
+        loss_l1 = F.l1_loss(100 * pose_V, ideal_pos.squeeze(0))
+        loss = 0.6 * loss_mse + 0.4 * loss_l1  + compute_constraints(action)
+        # Adaptive noise scale
+        noise_scale = 1e-4 * (1 - min(optimizer.state_dict()['state'][0]['n_iter'] / n_steps, 1)) ** 2
+        loss += noise_scale * torch.sum(torch.randn_like(action) * action)
+        loss.backward()
+        return loss
+    lr = 1.0 if line_search_fn else 1e-2
+    optimizer = torch.optim.LBFGS([action], lr=lr, max_iter=max_iter, history_size=history_size, line_search_fn=line_search_fn, tolerance_grad=1e-5, tolerance_change=1e-9)
+    for _ in range(n_steps):
+        current_loss = optimizer.step(closure)
+        if current_loss < best_loss:
+            best_loss = current_loss.item()
+            best_action = action.clone()
+        # Aggressive early stopping
+        if current_loss < 1e-6:
+            break
+    # Use the best action found
+    action.data.copy_(best_action)
+    return action
+
 
 def IK_solver(x):
     x = torch.tensor(x)
@@ -213,7 +190,7 @@ def IK_solver(x):
         noise = torch.rand(8, device=device)
         noise = noise * (joint_high - joint_low) + joint_low
         input_data = x[0].to(device)
-        samples = improved_annealed_langevin_dynamics(input_data, noise, n_steps=2500)
+        samples = flexible_lbfgs_annealed_langevin_dynamics(input_data, noise, n_steps=8, history_size=10, max_iter=5, line_search_fn="strong_wolfe")
         pose_V, joint_tf, matrix_end, d3 = FORWARD(samples)
         pose_V = pose_V.to(device)
         samples = samples.detach().cpu().numpy()
@@ -229,7 +206,6 @@ def IK_solver(x):
         end_point.append(dist1_1)
         output_denoise_list.append(samples)
         posev_list.append(pose_V.detach().cpu().numpy())
-        end_time = time.time()
         output_denoise_list.append(samples)
         posev_list.append(pose_V.detach().cpu().numpy())
         end_time = time.time()
